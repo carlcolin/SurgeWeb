@@ -38,6 +38,7 @@
     policyLayout: localStorage.getItem(LS_POLICY_LAYOUT) === 'single' ? 'single' : 'double',
     connections: savedConnections,
     selectionCache: {},
+    selectionRev: {},
     groupTypesCache: null,
     connected: false,
     demo: true,
@@ -516,6 +517,7 @@
       state.data.policiesRaw = policies;
       state.data.policyGroupsRaw = groupsRaw;
       const groups = normalizeGroups(policies, groupsRaw, null, null);
+      groups.forEach((g) => { if (g.name in state.selectionCache) g.selected = state.selectionCache[g.name]; });
       state.data.groups = groups;
     }
     state.data.events = Array.isArray(events) ? events : (events?.events || []);
@@ -533,12 +535,16 @@
     const worker = async () => {
       while (cursor < pending.length) {
         const g = pending[cursor++];
+        const rev = state.selectionRev[g.name] || 0;
+        const changed = () => (state.selectionRev[g.name] || 0) !== rev;
         try {
           const r = await api(`/v1/policy_groups/select?group_name=${encodeURIComponent(g.name)}`, { timeout: 4000 });
+          if (changed()) continue;
           const policy = r.data?.policy || null;
           state.selectionCache[g.name] = policy;
           g.selected = policy;
         } catch {
+          if (changed()) continue;
           state.selectionCache[g.name] = null;
         }
       }
@@ -1889,6 +1895,8 @@
         await api('/v1/policy_groups/select', { method: 'POST', body: { group_name: group, policy } });
         const g = state.data.groups.find((x) => x.name === group);
         if (g) g.selected = policy;
+        state.selectionCache[group] = policy;
+        state.selectionRev[group] = (state.selectionRev[group] || 0) + 1;
         showToast('已切换节点', `${group} → ${policy}`);
         render();
       } else if (action === 'test-group') {
