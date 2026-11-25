@@ -39,6 +39,8 @@
     connections: savedConnections,
     selectionCache: {},
     selectionRev: {},
+    override: {},
+    mcpOk: null,
     groupTypesCache: null,
     connected: false,
     demo: true,
@@ -307,6 +309,16 @@
   };
   const typeLabel = (type) => TYPE_LABELS[String(type || '').toLowerCase()] || String(type || 'GROUP').toUpperCase();
 
+  const AUTOMATIC_TYPES = ['smart', 'url-test', 'fallback', 'load-balance', 'subnet'];
+  const isAutoGroup = (type) => {
+    const t = String(type || '').toLowerCase();
+    return AUTOMATIC_TYPES.some((k) => t.includes(k));
+  };
+  const isSelectableGroup = (type) => {
+    const t = String(type || '').toLowerCase();
+    return ['select', 'manual', 'group'].includes(t) || t.includes('select');
+  };
+
   const parseGroupTypes = (text) => {
     const map = {};
     if (typeof text !== 'string' || !text) return map;
@@ -553,6 +565,28 @@
     if (state.view === 'policies' || state.view === 'overview') render();
   };
 
+  const mcpCall = async (name, args = {}, timeout = 8000) => {
+    const r = await api('/v1/mcp', {
+      method: 'POST',
+      timeout,
+      body: { jsonrpc: '2.0', id: Date.now(), method: 'tools/call', params: { name, arguments: args } },
+    });
+    const d = r.data || {};
+    if (d.error) throw new ApiError(d.error.code || 0, d.error.message || 'MCP 错误', d);
+    const result = d.result || {};
+    if (result.isError) throw new ApiError(0, result.content?.[0]?.text || 'MCP 工具返回错误', d);
+    const text = Array.isArray(result.content) ? (result.content.find((c) => c && c.type === 'text') || {}).text : null;
+    if (typeof text === 'string') {
+      try { return JSON.parse(text); } catch { return text; }
+    }
+    return result;
+  };
+
+  const mcpOverrides = async () => {
+    const env = await mcpCall('get_environment');
+    return env?.environment?.AutoPolicyGroupOverride || env?.AutoPolicyGroupOverride || {};
+  };
+
   const loadPolicies = async () => {
     const [pol, groupsRaw, bench, testResults] = await Promise.all([
       api('/v1/policies').then((r) => r.data).catch(() => null),
@@ -570,6 +604,14 @@
       if (g.name in state.selectionCache) g.selected = state.selectionCache[g.name];
     });
     state.data.groups = groups;
+    if (!state.demo && state.mcpOk !== false) {
+      mcpOverrides().then((ov) => {
+        state.mcpOk = true;
+        state.override = ov || {};
+        groups.forEach((g) => { if (state.override[g.name]) g.selected = state.override[g.name]; });
+        if (state.view === 'policies' || state.view === 'overview') render();
+      }).catch(() => { state.mcpOk = false; });
+    }
     hydrateSelections(groups);
   };
 
@@ -1171,6 +1213,7 @@
         <button class="btn btn-ghost btn-sm" data-action="collapse-all">全部折叠</button>
         <button class="btn btn-ghost btn-sm" data-action="refresh">刷新</button>
       </div>
+      ${state.mcpOk === false && groups.some((g) => isAutoGroup(g.type)) ? `<div class="faint" style="font-size:11px;margin:-2px 0 10px">自动组需要开启 http-api-mcp 才能临时覆盖，当前仅可查看。</div>` : ''}
       ${filtered.length ? `
         <div class="policy-grid ${layout === 'single' ? 'single' : ''}">
           ${columns.map((col) => `<div class="policy-col">${col.map((g) => renderGroupCard(g, false, true)).join('')}</div>`).join('')}
@@ -1181,7 +1224,9 @@
 
   const renderGroupCard = (g, compact, collapsible = false) => {
     const members = compact ? g.members.slice(0, 4) : g.members;
-    const canSelect = ['select', 'manual', 'group'].includes(g.type) || g.type.includes('select');
+    const auto = isAutoGroup(g.type);
+    const canSelect = isSelectableGroup(g.type) || (auto && state.mcpOk !== false);
+    const overridden = state.override[g.name];
     const expanded = !collapsible || isGroupExpanded(g);
     return `
       <div class="card policy-card ${expanded ? '' : 'collapsed'}">
@@ -1191,10 +1236,11 @@
             <span class="type-badge ${esc(g.type)}">${esc(typeLabel(g.type))}</span>
             <div class="policy-title-text">
               <h3 title="${esc(g.name)}">${esc(g.name)}</h3>
-              <div class="policy-summary">${g.members.length} 个节点${g.selected ? ` · 当前 ${esc(g.selected)}` : ''}</div>
+              <div class="policy-summary">${g.members.length} 个节点${overridden ? ` · 临时覆盖 ${esc(overridden)}` : g.selected ? ` · 当前 ${esc(g.selected)}` : ''}</div>
             </div>
           </div>
           <div class="policy-actions">
+            ${overridden ? `<button class="icon-btn" title="取消临时覆盖" data-action="clear-override" data-group="${esc(g.name)}">${icon('close')}</button>` : ''}
             <button class="icon-btn" title="测试该组" data-action="test-group" data-group="${esc(g.name)}">${icon('zap')}</button>
             ${collapsible ? `<span class="chevron" aria-hidden="true">${icon('chevron')}</span>` : ''}
           </div>
@@ -1892,12 +1938,54 @@
       } else if (action === 'select-member') {
         const group = el.dataset.group;
         const policy = el.dataset.policy;
-        await api('/v1/policy_groups/select', { method: 'POST', body: { group_name: group, policy } });
         const g = state.data.groups.find((x) => x.name === group);
+        const auto = isAutoGroup(g?.type);
+        if (auto) {
+          try {
+            await mcpCall('select_group_policy', { group, policy });
+          } catch (err) {
+            showToast('覆盖失败', `MCP ${err.status || ''} ${err.message || '请求被拒绝'}`.trim(), 'err');
+            return;
+          }
+          const ov = await mcpOverrides().catch(() => null);
+          if (ov && ov[group] === policy) {
+            state.mcpOk = true;
+            state.override[group] = policy;
+            if (g) g.selected = policy;
+            state.selectionCache[group] = policy;
+            state.selectionRev[group] = (state.selectionRev[group] || 0) + 1;
+            showToast('已临时覆盖', `${group} → ${policy}，重启 Surge 后恢复自动`);
+          } else {
+            showToast('覆盖未生效', `回读：${ov && ov[group] ? ov[group] : '无覆盖记录'}`, 'err');
+          }
+          render();
+          return;
+        }
+        await api('/v1/policy_groups/select', { method: 'POST', body: { group_name: group, policy } });
         if (g) g.selected = policy;
         state.selectionCache[group] = policy;
         state.selectionRev[group] = (state.selectionRev[group] || 0) + 1;
         showToast('已切换节点', `${group} → ${policy}`);
+        render();
+      } else if (action === 'clear-override') {
+        const group = el.dataset.group;
+        try {
+          await mcpCall('select_group_policy', { group, policy: 'auto' });
+        } catch (err) {
+          showToast('取消失败', `MCP ${err.status || ''} ${err.message || ''}`.trim(), 'err');
+          return;
+        }
+        const ov = await mcpOverrides().catch(() => null);
+        if (ov && !ov[group]) {
+          delete state.override[group];
+          delete state.selectionCache[group];
+          delete state.selectionRev[group];
+          const g = state.data.groups.find((x) => x.name === group);
+          if (g) g.selected = null;
+          showToast('已取消覆盖', group);
+        } else {
+          showToast('取消未生效', `仍为 ${ov && ov[group] ? ov[group] : '未知'}`, 'err');
+        }
         render();
       } else if (action === 'test-group') {
         const group = el.dataset.group;
