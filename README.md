@@ -73,8 +73,24 @@ python3 -m http.server 8899 --bind 0.0.0.0
 - `/v1/events`
 - `/v1/profiles/current`
 - `/v1/metrics`
+- `POST /v1/mcp`（仅自动组覆盖需要）
 
 不同 Surge 版本/平台对部分接口支持不同；请求头、计时等字段通常需要开启 HTTP Capture 或 MITM。
+
+### MCP（自动组覆盖需要）
+
+对 `smart / url-test / fallback / load-balance` 等自动组的临时覆盖，HTTP API 不支持（`POST /v1/policy_groups/select` 会返回 `400`），需要通过 MCP 的 `select_group_policy` 实现。在 Surge 配置的 `[General]` 中启用：
+
+```ini
+http-api-mcp = true
+```
+
+- 未启用：自动组仍可查看，但只读，页面顶部会提示
+- 已启用：点击节点即临时覆盖，组标题显示「临时覆盖」，点 ✕ 取消（等价于 `policy: "auto"`）
+- 覆盖是临时的，Surge 重启后恢复自动选择
+- 依赖的 MCP 工具：`select_group_policy`、`get_environment`
+
+其余功能（策略组查看、测速、请求、DNS、流量等）仍然走 HTTP API，不需要开启 MCP。
 
 ## 说明
 
