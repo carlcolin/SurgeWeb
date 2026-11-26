@@ -463,6 +463,13 @@ table.req tbody tr:hover { background: rgba(148, 163, 184, 0.035); }
 .node-type.reject { color: #fecaca; border-color: rgba(248,113,113,.18); background: rgba(248,113,113,.06); }
 .node-type.group { color: #ddd6fe; border-color: rgba(167,139,250,.18); background: rgba(167,139,250,.06); }
 .member-avoid { font-size: 9px; color: var(--amber); font-family: var(--mono); }
+.member-avoid-btn {
+  flex: 0 0 auto; font-family: var(--mono); font-size: 9px; line-height: 1.4;
+  padding: 2px 6px; border-radius: 6px; cursor: pointer;
+  color: var(--faint); background: transparent; border: 1px solid var(--line);
+}
+.member-avoid-btn:hover { color: var(--amber); border-color: rgba(251, 191, 36, .35); }
+.member-avoid-btn.on { color: var(--amber); border-color: rgba(251, 191, 36, .35); background: rgba(251, 191, 36, .08); }
 .lat { display: flex; align-items: center; gap: 7px; flex: 0 0 auto; }
 .lat-bar { width: 46px; height: 3px; border-radius: 99px; background: rgba(148, 163, 184, 0.12); overflow: hidden; }
 .lat-bar i { display: block; height: 100%; border-radius: 99px; background: var(--green); }

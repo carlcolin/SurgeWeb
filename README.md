@@ -18,7 +18,7 @@
 
 - **概览**：设备状态、API 延迟、下载/上传/总计流量、功能开关、事件日志、最近请求。
 - **实时统计**：实时速率曲线、网络接口/策略维度流量、当前/最高速度、表头多列排序。
-- **策略**：策略组与节点、当前选中节点、延迟测试、单列/双列独立列瀑布流布局。
+- **策略**：策略组与节点、当前选中节点、延迟测试、单列/双列独立列瀑布流布局、自动组节点避让（AVOID）。
 - **请求**：最近/活动请求、URL/策略/规则过滤、请求详情（一般/请求/计时）、结束活动连接。
 - **DNS**：动态/静态 DNS 记录查看与查询。
 - **资源**：外部资源状态与手动更新。
@@ -63,6 +63,7 @@ python3 -m http.server 8899 --bind 0.0.0.0
 - `/v1/features/{mitm,rewrite,scripting,capture}`
 - `/v1/requests/{recent,active,kill}`
 - `/v1/policies`
+- `/v1/policies/avoided`
 - `/v1/policy_groups`
 - `/v1/policy_groups/select`
 - `/v1/policy_groups/test`
@@ -91,6 +92,16 @@ http-api-mcp = true
 - 依赖的 MCP 工具：`select_group_policy`、`get_environment`
 
 其余功能（策略组查看、测速、请求、DNS、流量等）仍然走 HTTP API，不需要开启 MCP。
+
+## 自动组避让
+
+对 `url-test / fallback / load-balance / smart` 自动组的成员，可以在节点行点「避让」把某个策略标记为避开：
+
+- 避让是**软标记**：自动组只有在其他成员都不可用时才会使用它，`smart` 组会把它放到最后尝试
+- 按策略名全局生效：同一节点出现在多个自动组、或经 `underlying-proxy` 派生出的副本都会受影响
+- 不影响 `select` 组、临时覆盖，以及规则/策略组对该策略的直接引用
+- 重启 Surge 后自动清除；工具栏的「清除避让」可一次全部取消
+- 使用普通 HTTP API（`GET/POST /v1/policies/avoided`），不需要开启 MCP
 
 ## 说明
 

@@ -40,6 +40,7 @@
     selectionCache: {},
     selectionRev: {},
     override: {},
+    avoided: new Set(),
     mcpOk: null,
     groupTypesCache: null,
     connected: false,
@@ -499,7 +500,7 @@
   };
 
   const loadOverview = async () => {
-    const [outbound, mitm, rewrite, scripting, capture, active, recent, resources, metrics, policies, groupsRaw, traffic, events] = await Promise.all([
+    const [outbound, mitm, rewrite, scripting, capture, active, recent, resources, metrics, policies, groupsRaw, traffic, events, avoidedRaw] = await Promise.all([
       api('/v1/outbound').then((r) => r.data).catch(() => null),
       api('/v1/features/mitm').then((r) => r.data).catch(() => null),
       api('/v1/features/rewrite').then((r) => r.data).catch(() => null),
@@ -513,6 +514,7 @@
       api('/v1/policy_groups').then((r) => r.data).catch(() => null),
       api('/v1/traffic').then((r) => r.data).catch(() => null),
       api('/v1/events').then((r) => r.data).catch(() => null),
+      api('/v1/policies/avoided').then((r) => r.data).catch(() => null),
     ]);
     state.data.outbound = outbound?.mode || state.data.outbound;
     state.data.features = {
@@ -529,6 +531,7 @@
       state.data.policiesRaw = policies;
       state.data.policyGroupsRaw = groupsRaw;
       const groups = normalizeGroups(policies, groupsRaw, null, null);
+      applyAvoided(groups, avoidedRaw);
       groups.forEach((g) => { if (g.name in state.selectionCache) g.selected = state.selectionCache[g.name]; });
       state.data.groups = groups;
     }
@@ -588,17 +591,19 @@
   };
 
   const loadPolicies = async () => {
-    const [pol, groupsRaw, bench, testResults] = await Promise.all([
+    const [pol, groupsRaw, bench, testResults, avoidedRaw] = await Promise.all([
       api('/v1/policies').then((r) => r.data).catch(() => null),
       api('/v1/policy_groups').then((r) => r.data).catch(() => null),
       api('/v1/policies/benchmark_results').then((r) => r.data).catch(() => null),
       api('/v1/policy_groups/test_results').then((r) => r.data).catch(() => null),
+      api('/v1/policies/avoided').then((r) => r.data).catch(() => null),
     ]);
     state.data.policiesRaw = pol;
     state.data.policyGroupsRaw = groupsRaw;
     state.data.benchmark = bench;
     state.data.testResults = testResults;
     const groups = normalizeGroups(pol, groupsRaw, bench, testResults);
+    applyAvoided(groups, avoidedRaw);
     applyGroupTypes(groups, await loadGroupTypes());
     groups.forEach((g) => {
       if (g.name in state.selectionCache) g.selected = state.selectionCache[g.name];
@@ -765,6 +770,13 @@
     if (Array.isArray(data.items)) return data.items;
     if (Array.isArray(data.requests)) return data.requests;
     return [];
+  };
+
+  const applyAvoided = (groups, raw) => {
+    state.avoided = new Set(toArray(raw, 'policies'));
+    (groups || []).forEach((g) => (g.members || []).forEach((m) => {
+      m.avoided = state.avoided.has(m.name);
+    }));
   };
 
   const parseMetrics = (text) => {
@@ -1209,6 +1221,7 @@
           <button class="seg ${layout === 'single' ? 'active' : ''}" data-action="policy-layout" data-layout="single">单列</button>
         </div>
         <button class="btn btn-ghost btn-sm" data-action="test-all">测试全部</button>
+        ${state.avoided.size ? `<button class="btn btn-ghost btn-sm" data-action="clear-avoided" title="清除全部自动组避让">清除避让 (${state.avoided.size})</button>` : ''}
         <button class="btn btn-ghost btn-sm" data-action="expand-all">全部展开</button>
         <button class="btn btn-ghost btn-sm" data-action="collapse-all">全部折叠</button>
         <button class="btn btn-ghost btn-sm" data-action="refresh">刷新</button>
@@ -1257,6 +1270,7 @@
   const renderMember = (g, m, canSelect) => {
     const tone = latencyTone(m.ms);
     const selected = g.selected === m.name;
+    const avoidable = isAutoGroup(g.type);
     const pct = m.ms === null || m.ms < 0 ? 0 : clamp((m.ms / 500) * 100, 6, 100);
     return `
       <div class="member ${selected ? 'selected' : ''} ${canSelect ? 'clickable' : ''}"
@@ -1265,6 +1279,7 @@
         <span class="member-name" title="${esc(m.name)}">${esc(m.name)}</span>
         <span class="node-type ${nodeTypeClass(m)}" title="${esc(m.typeDescription || '')}">${esc(nodeTypeLabel(m))}</span>
         ${m.avoided ? `<span class="member-avoid">AVOID</span>` : ''}
+        ${avoidable ? `<button class="member-avoid-btn ${m.avoided ? 'on' : ''}" title="${m.avoided ? '取消避让，恢复自动选择' : '在自动策略组中避让此策略'}" data-action="toggle-avoid" data-policy="${esc(m.name)}" data-avoided="${m.avoided ? '1' : '0'}">${m.avoided ? '恢复' : '避让'}</button>` : ''}
         <span class="lat">
           <span class="lat-bar"><i class="${tone === 'good' ? '' : tone === 'warn' ? 'warn' : 'bad'}" style="width:${pct}%"></i></span>
           <span class="lat-num ${tone}" title="${esc(m.error || '')}">${fmtMs(m.ms)}</span>
@@ -1987,6 +2002,26 @@
           showToast('取消未生效', `仍为 ${ov && ov[group] ? ov[group] : '未知'}`, 'err');
         }
         render();
+      } else if (action === 'toggle-avoid') {
+        const policy = el.dataset.policy;
+        const next = el.dataset.avoided !== '1';
+        try {
+          const r = await api('/v1/policies/avoided', { method: 'POST', body: { policy_name: policy, avoided: next } });
+          applyAvoided(state.data.groups, r.data);
+          showToast(next ? '已避让' : '已取消避让', next ? `${policy} · 自动组将尽量避开` : policy);
+          render();
+        } catch (err) {
+          showToast('避让失败', err.message || '请求被拒绝', 'err');
+        }
+      } else if (action === 'clear-avoided') {
+        try {
+          const r = await api('/v1/policies/avoided', { method: 'POST', body: { clear: true } });
+          applyAvoided(state.data.groups, r.data);
+          showToast('已清除避让', '所有策略恢复自动选择');
+          render();
+        } catch (err) {
+          showToast('清除失败', err.message || '请求被拒绝', 'err');
+        }
       } else if (action === 'test-group') {
         const group = el.dataset.group;
         showToast('正在测试', group);
